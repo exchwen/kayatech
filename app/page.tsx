@@ -20,6 +20,38 @@ export default function Home() {
   const [result, setResult] = useState<SliceResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  function selectFile(selected: File | null) {
+    if (!selected) return;
+
+    if (!selected.name.toLowerCase().endsWith(".stl")) {
+      setError("Yalnızca .stl dosyası kabul edilir.");
+      return;
+    }
+
+    if (selected.size === 0 || selected.size > 25 * 1024 * 1024) {
+      setError("Dosya boş olamaz ve 25 MB sınırını aşamaz.");
+      return;
+    }
+
+    setFile(selected);
+    setError("");
+    setResult(null);
+  }
+
+  async function readJson(response: Response) {
+    const text = await response.text();
+
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(
+        response.status === 413
+          ? "İstek boyut sınırını aştı."
+          : "Sunucudan geçerli bir yanıt alınamadı."
+      );
+    }
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
 
@@ -33,23 +65,61 @@ export default function Home() {
     setResult(null);
 
     try {
-      const body = new FormData();
-      body.append("file", file);
-
-      const response = await fetch("/api/slice", {
+      // 1. R2 için geçici, imzalı yükleme URL'si al.
+      const urlResponse = await fetch("/api/upload-url", {
         method: "POST",
-        body
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          size: file.size
+        })
       });
 
-      const data = await response.json();
+      const urlData = await readJson(urlResponse);
 
-      if (!response.ok) {
+      if (!urlResponse.ok) {
+        throw new Error(urlData?.error || "Yükleme bağlantısı alınamadı.");
+      }
+
+      if (
+        typeof urlData.uploadUrl !== "string" ||
+        typeof urlData.key !== "string"
+      ) {
+        throw new Error("Sunucunun yükleme yanıtı geçersiz.");
+      }
+
+      // 2. Dosyayı Vercel üzerinden geçirmeden doğrudan R2'ye yükle.
+      const uploadResponse = await fetch(urlData.uploadUrl, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/octet-stream"
+        },
+        body: file
+      });
+
+      if (!uploadResponse.ok) {
         throw new Error(
-          data?.error || "Dilimleme başarısız oldu."
+          "STL dosyası R2'ye yüklenemedi. Bucket CORS ayarlarını kontrol edin."
         );
       }
 
-      setResult(data);
+      // 3. R2 nesne anahtarını dilimleme API'sine gönder.
+      const sliceResponse = await fetch("/api/slice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          key: urlData.key,
+          filename: file.name
+        })
+      });
+
+      const sliceData = await readJson(sliceResponse);
+
+      if (!sliceResponse.ok) {
+        throw new Error(sliceData?.error || "Dilimleme başarısız oldu.");
+      }
+
+      setResult(sliceData);
     } catch (err) {
       setError(
         err instanceof Error
@@ -103,11 +173,7 @@ export default function Home() {
               className="hiddenInput"
               type="file"
               accept=".stl,model/stl,application/sla"
-              onChange={(e) => {
-                setFile(e.target.files?.[0] ?? null);
-                setResult(null);
-                setError("");
-              }}
+              onChange={(e) => selectFile(e.target.files?.[0] ?? null)}
             />
 
             <button
@@ -117,18 +183,7 @@ export default function Home() {
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
-                const selected = e.dataTransfer.files?.[0];
-
-                if (
-                  selected &&
-                  selected.name.toLowerCase().endsWith(".stl")
-                ) {
-                  setFile(selected);
-                  setError("");
-                  setResult(null);
-                } else {
-                  setError("Yalnızca .stl dosyası kabul edilir.");
-                }
+                selectFile(e.dataTransfer.files?.[0] ?? null);
               }}
             >
               <span className="uploadGlyph">↑</span>
@@ -148,13 +203,13 @@ export default function Home() {
               type="submit"
               disabled={busy || !file}
             >
-              {busy ? "Model dilimleniyor…" : "Modeli analiz et"}
+              {busy ? "Model yükleniyor ve dilimleniyor…" : "Modeli analiz et"}
               {!busy && <span>↗</span>}
             </button>
 
             <p className="privacy">
-              Dosyan yalnızca analiz için işlenir. Bu aşamada
-              otomatik fiyat veya sipariş oluşturulmaz.
+              Dosyan analiz için işlenir. Bu aşamada otomatik
+              fiyat veya sipariş oluşturulmaz.
             </p>
 
             {error && (
@@ -172,8 +227,8 @@ export default function Home() {
                 <span className="spinner dark" />
                 <h2>Model analiz ediliyor</h2>
                 <p>
-                  Geometri dilimleniyor, filament ve süre
-                  hesaplanıyor.
+                  Dosya güvenli depolamaya yükleniyor;
+                  ardından filament ve süre hesaplanıyor.
                 </p>
               </div>
             ) : result ? (
@@ -188,10 +243,9 @@ export default function Home() {
                   <div>
                     <small>Filament tüketimi</small>
                     <strong>
-                      {result.filament_grams.toLocaleString(
-                        "tr-TR",
-                        { maximumFractionDigits: 3 }
-                      )}{" "}
+                      {result.filament_grams.toLocaleString("tr-TR", {
+                        maximumFractionDigits: 3
+                      })}{" "}
                       <i>g</i>
                     </strong>
                   </div>
@@ -199,10 +253,9 @@ export default function Home() {
                   <div>
                     <small>Tahmini baskı süresi</small>
                     <strong>
-                      {result.estimated_minutes.toLocaleString(
-                        "tr-TR",
-                        { maximumFractionDigits: 2 }
-                      )}{" "}
+                      {result.estimated_minutes.toLocaleString("tr-TR", {
+                        maximumFractionDigits: 2
+                      })}{" "}
                       <i>dk</i>
                     </strong>
                   </div>
@@ -212,10 +265,9 @@ export default function Home() {
                   <span>Katman yüksekliği</span>
                   <strong>
                     {result.layer_height_mm
-                      ? result.layer_height_mm.toLocaleString(
-                          "tr-TR",
-                          { maximumFractionDigits: 2 }
-                        )
+                      ? result.layer_height_mm.toLocaleString("tr-TR", {
+                          maximumFractionDigits: 2
+                        })
                       : "—"}{" "}
                     mm
                   </strong>
@@ -232,8 +284,7 @@ export default function Home() {
                 <h2>Sonuç burada görünecek</h2>
                 <p>
                   STL dosyanı yükleyip analizi başlattığında
-                  gramaj ve tahmini baskı süresi burada
-                  görüntülenir.
+                  gramaj ve tahmini baskı süresi burada görüntülenir.
                 </p>
                 <div className="miniSteps">
                   <span>01 <b>Yükle</b></span>
