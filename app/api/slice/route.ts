@@ -119,11 +119,14 @@ export async function POST(request: NextRequest) {
     const client = await auth.getIdTokenClient(SERVICE_URL);
 
     const form = new FormData();
-    form.append(
-      "file",
-      new Blob([bytes], { type: "application/octet-stream" }),
-      "model.stl"
-    );
+    const fileBuffer = new ArrayBuffer(bytes.byteLength);
+new Uint8Array(fileBuffer).set(bytes);
+
+form.append(
+  "file",
+  new Blob([fileBuffer], { type: "application/octet-stream" }),
+  "model.stl"
+);
 
     const response = await client.request({
       url: `${SERVICE_URL.replace(/\/$/, "")}/slice`,
