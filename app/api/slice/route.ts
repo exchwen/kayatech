@@ -1,5 +1,10 @@
 
 import { GoogleAuth } from "google-auth-library";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  S3Client
+} from "@aws-sdk/client-s3";
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -8,7 +13,27 @@ export const maxDuration = 300;
 const SERVICE_URL = process.env.SLICER_SERVICE_URL;
 const MAX_BYTES = 25 * 1024 * 1024;
 
+function createR2Client() {
+  const accountId = process.env.R2_ACCOUNT_ID;
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+
+  if (!accountId || !accessKeyId || !secretAccessKey) {
+    throw new Error("R2 ayarları eksik.");
+  }
+
+  return new S3Client({
+    region: "auto",
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId, secretAccessKey }
+  });
+}
+
 export async function POST(request: NextRequest) {
+  let key: string | undefined;
+  let bucket: string | undefined;
+  let s3: S3Client | undefined;
+
   try {
     if (!SERVICE_URL) {
       return NextResponse.json(
@@ -17,32 +42,65 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const incoming = await request.formData();
-    const file = incoming.get("file");
+    bucket = process.env.R2_BUCKET_NAME;
 
-    if (!(file instanceof File)) {
+    if (!bucket) {
       return NextResponse.json(
-        { error: "STL dosyası gönderilmedi." },
+        { error: "R2 bucket ayarı eksik." },
+        { status: 500 }
+      );
+    }
+
+    const body = await request.json();
+    key = body?.key;
+
+    if (
+      typeof key !== "string" ||
+      !/^uploads\/[0-9a-f-]{36}\.stl$/i.test(key)
+    ) {
+      return NextResponse.json(
+        { error: "Geçersiz dosya anahtarı." },
         { status: 400 }
       );
     }
 
-    if (!file.name.toLowerCase().endsWith(".stl")) {
+    s3 = createR2Client();
+
+    const object = await s3.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key
+      })
+    );
+
+    if (!object.Body) {
       return NextResponse.json(
-        { error: "Yalnızca STL dosyaları kabul edilir." },
-        { status: 400 }
+        { error: "R2 dosyası okunamadı." },
+        { status: 404 }
       );
     }
 
-    if (file.size === 0 || file.size > MAX_BYTES) {
+    if (
+      object.ContentLength === undefined ||
+      object.ContentLength <= 0 ||
+      object.ContentLength > MAX_BYTES
+    ) {
       return NextResponse.json(
-        { error: "Dosya boş olamaz ve 25 MB sınırını aşamaz." },
+        { error: "Dosya boş veya 25 MB sınırını aşıyor." },
         { status: 413 }
       );
     }
 
-    const credentialsJson =
-      process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+    const bytes = await object.Body.transformToByteArray();
+
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_BYTES) {
+      return NextResponse.json(
+        { error: "Dosya boş veya 25 MB sınırını aşıyor." },
+        { status: 413 }
+      );
+    }
+
+    const credentialsJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
 
     if (!credentialsJson) {
       return NextResponse.json(
@@ -55,9 +113,7 @@ export async function POST(request: NextRequest) {
 
     const auth = new GoogleAuth({
       credentials,
-      scopes: [
-        "https://www.googleapis.com/auth/cloud-platform"
-      ]
+      scopes: ["https://www.googleapis.com/auth/cloud-platform"]
     });
 
     const client = await auth.getIdTokenClient(SERVICE_URL);
@@ -65,10 +121,8 @@ export async function POST(request: NextRequest) {
     const form = new FormData();
     form.append(
       "file",
-      new Blob([await file.arrayBuffer()], {
-        type: "application/octet-stream"
-      }),
-      file.name
+      new Blob([bytes], { type: "application/octet-stream" }),
+      "model.stl"
     );
 
     const response = await client.request({
@@ -82,14 +136,35 @@ export async function POST(request: NextRequest) {
   } catch (error: unknown) {
     const err = error as {
       response?: { status?: number };
+      name?: string;
       message?: string;
     };
 
     console.error("STL dilimleme hatası:", err.message);
 
     return NextResponse.json(
-      { error: "Dilimleme başarısız oldu. Sunucu ayarlarını kontrol edin." },
+      {
+        error:
+          err.name === "NoSuchKey"
+            ? "R2'de dosya bulunamadı. Dosyayı yeniden yükleyin."
+            : "Dilimleme başarısız oldu. Sunucu ayarlarını kontrol edin."
+      },
       { status: err.response?.status || 502 }
     );
+  } finally {
+    if (s3 && bucket && key) {
+      try {
+        await s3.send(
+          new DeleteObjectCommand({
+            Bucket: bucket,
+            Key: key
+          })
+        );
+      } catch (error) {
+        console.error("Geçici R2 dosyası silinemedi:", error);
+      }
+
+      s3.destroy();
+    }
   }
 }
