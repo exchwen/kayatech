@@ -112,11 +112,10 @@ export async function POST(request: NextRequest) {
     const credentials = JSON.parse(credentialsJson);
 
     const auth = new GoogleAuth({
-      credentials,
-      scopes: ["https://www.googleapis.com/auth/cloud-platform"]
-    });
+  credentials
+});
 
-    const client = await auth.getIdTokenClient(SERVICE_URL);
+const client = await auth.getIdTokenClient(SERVICE_URL);
 
     const form = new FormData();
     const fileBuffer = new ArrayBuffer(bytes.byteLength);
