@@ -139,18 +139,41 @@ const response = await client.request({
 
 
     return NextResponse.json(response.data);
-  } catch (error: unknown) {
+    } catch (error: unknown) {
     const err = error as {
-      response?: { status?: number };
+      response?: {
+        status?: number;
+        data?: unknown;
+      };
       name?: string;
       message?: string;
+      code?: string;
     };
 
-console.error("STL dilimleme hatası:", {
-  name: err.name,
-  message: err.message,
-  status: err.response?.status
-});
+    let responseDetails: string | undefined;
+
+    if (err.response?.data !== undefined) {
+      try {
+        responseDetails =
+          typeof err.response.data === "string"
+            ? err.response.data
+            : JSON.stringify(err.response.data);
+
+        responseDetails = responseDetails
+          .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
+          .slice(0, 1000);
+      } catch {
+        responseDetails = "[Yanıt ayrıntısı okunamadı]";
+      }
+    }
+
+    console.error("STL dilimleme hatası:", {
+      name: err.name,
+      message: err.message,
+      code: err.code,
+      status: err.response?.status,
+      responseDetails
+    });
 
     return NextResponse.json(
       {
