@@ -146,8 +146,7 @@ form.append(
 console.error("STL dilimleme hatası:", {
   name: err.name,
   message: err.message,
-  status: err.response?.status,
-  responseData: err.response?.data
+  status: err.response?.status
 });
 
     return NextResponse.json(
