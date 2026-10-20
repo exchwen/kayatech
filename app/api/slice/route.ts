@@ -143,7 +143,7 @@ form.append(
       message?: string;
     };
 
-    console.error("STL dilimleme hatası:", {
+console.error("STL dilimleme hatası:", {
   name: err.name,
   message: err.message,
   status: err.response?.status,
