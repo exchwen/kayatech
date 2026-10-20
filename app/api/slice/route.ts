@@ -127,12 +127,17 @@ form.append(
   "model.stl"
 );
 
-    const response = await client.request({
-      url: `${SERVICE_URL.replace(/\/$/, "")}/slice`,
-      method: "POST",
-      data: form,
-      timeout: 270000
-    });
+const response = await client.request({
+  url: `${SERVICE_URL.replace(/\/$/, "")}/slice`,
+  method: "POST",
+  data: form,
+  timeout: 270000,
+  retry: false,
+  headers: {
+    "Content-Type": "multipart/form-data"
+  },
+  responseType: "json"
+});
 
     return NextResponse.json(response.data);
   } catch (error: unknown) {
