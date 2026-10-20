@@ -143,7 +143,12 @@ form.append(
       message?: string;
     };
 
-    console.error("STL dilimleme hatası:", err.message);
+    console.error("STL dilimleme hatası:", {
+  name: err.name,
+  message: err.message,
+  status: err.response?.status,
+  responseData: err.response?.data
+});
 
     return NextResponse.json(
       {
